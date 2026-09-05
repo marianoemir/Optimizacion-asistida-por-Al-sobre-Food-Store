@@ -3,62 +3,67 @@
 ------------------------------------------------------------------------
 
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT p.id, u.nombre, u.apellido, p.fecha, p.estado, p.total
+SELECT p.id, p.fecha, p.estado, p.total, u.nombre, u.apellido
 FROM pedido p
 JOIN usuario u ON u.id = p.usuario_id
 WHERE p.eliminado = FALSE
-  AND p.estado = 'TERMINADO'
   AND p.fecha BETWEEN '2025-01-01' AND '2025-06-30'
-ORDER BY p.fecha DESC;
+  AND p.estado = 'TERMINADO';
 
+--Salida de pgadmin
 
+"Hash Join  (cost=825.13..8304.72 rows=18083 width=51) (actual time=4.192..26.581 rows=18000 loops=1)"
+"  Hash Cond: (p.usuario_id = u.id)"
+"  Buffers: shared hit=4307"
+"  ->  Seq Scan on pedido p  (cost=0.00..7432.11 rows=18083 width=32) (actual time=0.010..18.889 rows=18000 loops=1)"
+"        Filter: ((NOT eliminado) AND (fecha >= '2025-01-01'::date) AND (fecha <= '2025-06-30'::date) AND (estado = 'TERMINADO'::estado_pedido))"
+"        Rows Removed by Filter: 182006"
+"        Buffers: shared hit=3932"
+"  ->  Hash  (cost=575.06..575.06 rows=20006 width=35) (actual time=4.124..4.125 rows=20006 loops=1)"
+"        Buckets: 32768  Batches: 1  Memory Usage: 1662kB"
+"        Buffers: shared hit=375"
+"        ->  Seq Scan on usuario u  (cost=0.00..575.06 rows=20006 width=35) (actual time=0.006..1.992 rows=20006 loops=1)"
+"              Buffers: shared hit=375"
+"Planning:"
+"  Buffers: shared hit=86 dirtied=6"
+"Planning Time: 0.595 ms"
+"Execution Time: 27.237 ms"
 
---Análisis del Plan "ANTES"
+--Análisis del Plan "ANTES" (Consulta 1)
 
-Nodo principal de lectura: Parallel Seq Scan sobre la tabla pedido. Al no existir un índice compuesto por fecha, estado y borrado lógico, PostgreSQL debe recorrer secuencialmente 200.000 filas de pedidos (divididas entre workers), descartando 66.669 filas por worker (Rows Removed by Filter).  Costo estimado: 6398.79Tiempo de ejecución real: 38.501 msPropuesta de OptimizaciónCrear un índice compuesto e index-condicional (parcial) sobre pedido. Al incluir fecha y estado únicamente para las filas vigentes (eliminado = FALSE), reducimos el tamaño del índice y le permitimos al motor saltar directamente al rango sin leer la tabla completa.Ejecutá la creación del índice:
+Nodo principal de cuello de botella: Seq Scan sobre la tabla pedido (cost=0.00..7432.11), leyendo 200.006 filas en disco y descartando 182.006 filas por filtro (Rows Removed by Filter).
+
+Filas devueltas por el filtro: 18.000 filas reales procesadas.
+
+Costo estimado: 8304.72
+
+Tiempo de ejecución real: 27.237 ms (I/O alto con 3932 buffers leídos solo en la tabla pedido).
+
+-- Crear el Índice de Optimización
 
 SQL
 CREATE INDEX idx_pedido_fecha_estado_vigente 
 ON pedido(fecha, estado) 
 WHERE eliminado = FALSE;
 
---nueva medición
+-- Medición "DESPUÉS"
 
+SQL
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT p.id, u.nombre, u.apellido, p.fecha, p.estado, p.total
+SELECT p.id, p.fecha, p.estado, p.total, u.nombre, u.apellido
 FROM pedido p
 JOIN usuario u ON u.id = p.usuario_id
 WHERE p.eliminado = FALSE
-  AND p.estado = 'TERMINADO'
   AND p.fecha BETWEEN '2025-01-01' AND '2025-06-30'
-ORDER BY p.fecha DESC;
+  AND p.estado = 'TERMINADO';
 
---Resultado
+--Análisis del Resultado (Consulta 1 — Con Datos Reales)(Lo que dice Gemini)
 
-"Nested Loop  (cost=0.58..16.62 rows=1 width=51) (actual time=0.053..0.053 rows=0 loops=1)"
-"  Buffers: shared read=2"
-"  ->  Index Scan Backward using idx_pedido_fecha_estado_vigente on pedido p  (cost=0.29..8.32 rows=1 width=32) (actual time=0.053..0.053 rows=0 loops=1)"
-"        Index Cond: ((fecha >= '2025-01-01'::date) AND (fecha <= '2025-06-30'::date) AND (estado = 'TERMINADO'::estado_pedido))"
-"        Buffers: shared read=2"
-"  ->  Index Scan using usuario_pkey on usuario u  (cost=0.29..8.30 rows=1 width=35) (never executed)"
-"        Index Cond: (id = p.usuario_id)"
-"Planning:"
-"  Buffers: shared hit=38 read=1"
-"Planning Time: 0.714 ms"
-"Execution Time: 0.095 ms"
+Nodo Antes: Seq Scan sobre pedido leyendo 200.006 filas (costo = 8304.72, tiempo real = 27.237 ms, lectura de buffers = 3932).
 
---Lo que dice Gemini
+Nodo Después: Bitmap Heap Scan utilizando idx_pedido_fecha_estado_vigente (costo = 6280.56, tiempo real = 12.818 ms, lectura de buffers en pedido = 2125).
 
-Pasamos de un escaneo secuencial paralelo que recorría 200.000 filas a un acceso directo por índice.
-
-Análisis del Resultado (Consulta 1)
-Nodo Antes: Parallel Seq Scan (costo = 6398.79, tiempo real = 38.501 ms, lectura de bloques = 3932 buffers).
-
-Cambio Aplicado: CREATE INDEX idx_pedido_fecha_estado_vigente ON pedido(fecha, estado) WHERE eliminado = FALSE;
-
-Nodo Después: Index Scan Backward usando idx_pedido_fecha_estado_vigente (costo = 16.62, tiempo real = 0.095 ms, lectura de bloques = 2 buffers).
-
-Mejora: ~405x más rápido (el tiempo cayó de 38.5 ms a 0.095 ms) y redujo la lectura de buffers de 3932 a solo 2.
+Mejora: Reducción de más del 50% del tiempo total de ejecución (de 27.2 ms a 12.8 ms) y casi un 50% menos de bloques leídos en disco/memoria para acceder a los pedidos.
 
 -----------------------------------------------------------------------------------
 --Consulta 2
