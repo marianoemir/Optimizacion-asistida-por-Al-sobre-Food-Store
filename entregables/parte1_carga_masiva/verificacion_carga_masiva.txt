@@ -1,0 +1,6 @@
+Verificación post-carga masiva (copia_trabajo):
+- usuario: 20006
+- producto: 50018
+- pedido: 200006
+- detalle_pedido: 400013
+- pedidos en rango 2025-01-01/2025-06-30: 72400
