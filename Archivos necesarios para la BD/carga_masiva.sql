@@ -1,5 +1,5 @@
 -- ============================================================
--- FOOD STORE — carga_masiva.sql (CORREGIDO)
+-- FOOD STORE — carga_masiva.sql (CORREGIDO Y LIMPIO)
 -- Correr SOLO sobre copia_trabajo, nunca sobre plantilla_food_store
 -- Protocolo de seguridad: respaldo previo obligatorio (hay ALTER TABLE)
 -- ============================================================
@@ -49,29 +49,31 @@ CROSS JOIN LATERAL (
 
 -- ============================================================
 -- 3. Cargar 200.000 pedidos
---    CORREGIDO (fecha): se usa un rango FIJO de 2 años
---    ('2025-01-01' en adelante) en vez de CURRENT_DATE, para que
---    cualquier consulta con fechas fijas (ej. Consulta 1 de Andrés,
---    BETWEEN '2025-01-01' AND '2025-06-30') tenga garantizado
---    devolver filas sin importar qué día se corra este script.
---    CORREGIDO (usuario_id): se reemplaza el CROSS JOIN LATERAL con
---    ORDER BY + OFFSET (que se repetía 200.000 veces) por aritmética
---    directa sobre IDs secuenciales — mismo patrón que ya se usaba
---    para producto_id en el paso 4, y mucho más rápido.
+--    Rango de fechas FIJO ('2025-01-01' en adelante) para que la
+--    Consulta 1 del laboratorio (BETWEEN '2025-01-01' AND '2025-06-30')
+--    tenga garantizado devolver filas.
+--    usuario_id por aritmética directa (más rápido que ORDER BY+OFFSET).
+--    Se capturan los IDs reales con RETURNING, porque data.sql ya había
+--    cargado 6 pedidos antes (los nuevos arrancan en el id 7, no en el 1).
 -- ============================================================
-INSERT INTO pedido (fecha, estado, total, forma_pago, usuario_id, eliminado)
-SELECT
-    ('2025-01-01'::date + (i % 500)) AS fecha,
-    (ARRAY['PENDIENTE', 'CONFIRMADO', 'TERMINADO', 'CANCELADO']::estado_pedido[])[1 + (i % 4)] AS estado,
-    0.00 AS total,
-    (ARRAY['TARJETA', 'TRANSFERENCIA', 'EFECTIVO']::forma_pago[])[1 + (i % 3)] AS forma_pago,
-    ((i % 20000) + 1) AS usuario_id,
-    FALSE AS eliminado
-FROM generate_series(1, 200000) AS i;
+WITH nuevos_pedidos AS (
+    INSERT INTO pedido (fecha, estado, total, forma_pago, usuario_id, eliminado)
+    SELECT
+        ('2025-01-01'::date + (i % 500)) AS fecha,
+        (ARRAY['PENDIENTE', 'CONFIRMADO', 'TERMINADO', 'CANCELADO']::estado_pedido[])[1 + (i % 4)] AS estado,
+        0.00 AS total,
+        (ARRAY['TARJETA', 'TRANSFERENCIA', 'EFECTIVO']::forma_pago[])[1 + (i % 3)] AS forma_pago,
+        ((i % 20000) + 1) AS usuario_id,
+        FALSE AS eliminado
+    FROM generate_series(1, 200000) AS i
+    RETURNING id
+)
+SELECT id INTO TEMP TABLE pedidos_nuevos FROM nuevos_pedidos;
 
 -- ============================================================
 -- 4. Cargar detalles de pedidos (2 renglones por pedido = 400.000 filas)
---    Sin cambios: ya usaba aritmética directa para producto_id.
+--    Usa los IDs reales capturados arriba (pedidos_nuevos), no un rango
+--    asumido — así no corrompe los 6 pedidos originales del seed.
 -- ============================================================
 ALTER TABLE detalle_pedido DISABLE TRIGGER trg_total_ins;
 
@@ -85,10 +87,10 @@ SELECT
     FALSE AS eliminado
 FROM (
     SELECT
-        p_id AS pedido_id,
-        ((p_id * 7 + k) % 50000) + 1 AS producto_id,
+        pn.id AS pedido_id,
+        ((pn.id * 7 + k) % 50000) + 1 AS producto_id,
         1 + (k % 5) AS cantidad
-    FROM generate_series(1, 200000) AS p_id
+    FROM pedidos_nuevos pn
     CROSS JOIN generate_series(1, 2) AS k
 ) d
 JOIN producto p ON p.id = d.producto_id;
