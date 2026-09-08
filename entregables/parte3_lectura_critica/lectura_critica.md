@@ -27,30 +27,39 @@ LIMIT 10;
 ```
 
 ```
-"Limit  (cost=5663.86..5663.88 rows=10 width=67) (actual time=49.957..49.960 rows=10 loops=1)"
+"Limit  (cost=5643.71..5643.74 rows=10 width=67) (actual time=51.598..51.602 rows=10 loops=1)"
 "  Buffers: shared hit=376 read=469"
-"  ->  Sort  (cost=5663.86..5713.87 rows=20006 width=67) (actual time=49.956..49.958 rows=10 loops=1)"
+"  ->  Sort  (cost=5643.71..5693.73 rows=20006 width=67) (actual time=51.597..51.600 rows=10 loops=1)"
 "        Sort Key: (sum(p.total)) DESC"
 "        Sort Method: top-N heapsort  Memory: 26kB"
 "        Buffers: shared hit=376 read=469"
-"        ->  HashAggregate  (cost=4981.46..5231.53 rows=20006 width=67) (actual time=44.356..47.687 rows=10001 loops=1)"
+"        ->  HashAggregate  (cost=4961.32..5211.39 rows=20006 width=67) (actual time=47.510..50.067 rows=10001 loops=1)"
 "              Group Key: u.id"
 "              Batches: 1  Memory Usage: 4881kB"
 "              Buffers: shared hit=376 read=469"
-"              ->  Hash Join  (cost=825.55..4481.08 rows=100076 width=43) (actual time=3.710..28.667 rows=100002 loops=1)"
+"              ->  Hash Join  (cost=825.55..4463.70 rows=99523 width=43) (actual time=4.337..31.245 rows=100002 loops=1)"
 "                    Hash Cond: (p.usuario_id = u.id)"
 "                    Buffers: shared hit=376 read=469"
-"                    ->  Index Only Scan using idx_pedido_usuario_total_estado on pedido p  (cost=0.42..3393.19 rows=100076 width=16) (actual time=0.036..10.418 rows=100002 loops=1)"
+"                    ->  Index Only Scan using idx_pedido_usuario_total_estado on pedido p  (cost=0.42..3377.26 rows=99523 width=16) (actual time=0.070..11.531 rows=100002 loops=1)"
 "                          Heap Fetches: 0"
 "                          Buffers: shared hit=1 read=469"
-"                    ->  Hash  (cost=575.06..575.06 rows=20006 width=35) (actual time=3.618..3.618 rows=20006 loops=1)"
+"                    ->  Hash  (cost=575.06..575.06 rows=20006 width=35) (actual time=4.212..4.213 rows=20006 loops=1)"
 "                          Buckets: 32768  Batches: 1  Memory Usage: 1583kB"
 "                          Buffers: shared hit=375"
-"                          ->  Seq Scan on usuario u  (cost=0.00..575.06 rows=20006 width=35) (actual time=0.009..1.546 rows=20006 loops=1)"
+"                          ->  Seq Scan on usuario u  (cost=0.00..575.06 rows=20006 width=35) (actual time=0.013..1.740 rows=20006 loops=1)"
 "                                Buffers: shared hit=375"
-"Planning Time: 0.579 ms"
-"Execution Time: 50.555 ms"
+"Planning:"
+"  Buffers: shared hit=37 read=1"
+"Planning Time: 1.941 ms"
+"Execution Time: 52.341 ms"
 ```
+
+> **Nota de consistencia:** este plan corresponde a la versión final de `copia_trabajo`,
+> recreada después de corregir un bug en `carga_masiva.sql` (afectaba las fechas de los
+> pedidos y la asignación de IDs en `detalle_pedido`). Reemplaza una versión anterior de
+> este mismo plan que usaba datos previos a esa corrección; el análisis y la tabla de
+> contraste de abajo no cambian en su contenido, solo se actualizaron los valores
+> numéricos citados para que coincidan con la tabla comparativa final de la Parte 2.
 
 ## 2. Prompt usado
 
@@ -87,41 +96,13 @@ para no contaminar su respuesta con una interpretación previa.
 
 ## 4. Tabla de contraste
 
-+-------------------------------------------+--------------------+------------------------------------------------------------+
-| Afirmación de la IA                       | ¿Es correcta?      | Corrección/Evidencia                                       |
-+-------------------------------------------+--------------------+------------------------------------------------------------+
-|       "El índice contiene todas las       |         No         |       El índice idx_pedido_usuario_total_estado solo       |
-|     columnas necesarias para el WHERE     |                    |      tiene como columnas usuario_id y total. estado y      |
-|            (estado, eliminado)"           |                    |       eliminado no están en el índice como columnas        |
-|                                           |                    |           — son la condición del índice parcial            |
-|                                           |                    |       (WHERE eliminado = FALSE AND estado IN (...)).       |
-|                                           |                    |    La IA confunde "predicado de un índice parcial" con     |
-|                                           |                    |  "columna cubierta". Por eso, además, el plan no muestra   |
-|                                           |                    |           ningún Index Cond sobre esas columnas:           |
-|                                           |                    |        el filtro ya está resuelto en la definición         |
-|                                           |                    |                del índice, no en el acceso.                |
-+-------------------------------------------+--------------------+------------------------------------------------------------+
-|      "Al estar los datos limpios en       | No verificable con |    Es una explicación técnicamente razonable de por qué    |
-|       el mapa de visibilidad, evita       |    el texto dado   |   puede darse Heap Fetches: 0 (requiere que las páginas    |
-|             lecturas costosas"            |                    |    estén marcadas como all-visible), pero no surge del     |
-|                                           |                    |     plan que le pasaste — el texto no menciona el mapa     |
-|                                           |                    |  de visibilidad en ningún lado. La IA agregó conocimiento  |
-|                                           |                    |       externo presentándolo como si viniera del plan.      |
-+-------------------------------------------+--------------------+------------------------------------------------------------+
-| "Logró Heap Fetches: 0, lo que significa  |         Si         |      Coincide con el plan real: Heap Fetches: 0 bajo       |
-|        que no necesitó ir a buscar        |                    | el Index Only Scan. Interpretación correcta (a diferencia  |
-|        datos a la tabla principal"        |                    |      del error típico de leerlo como "no leyó nada").      |
-+-------------------------------------------+--------------------+------------------------------------------------------------+
-|      "Escaneo secuencial completo...      |      Imprecisa     |   El plan muestra Buffers: shared hit=375 para usuario,    |
-|            para obtener todos             |                    |  es decir, 375 bloques desde la caché de shared_buffers,   |
-|           sus bloques de disco"           |                    |  no desde disco (no hay read=). Decir "bloques de disco"   |
-|                                           |                    | es engañoso — precisamente esa es la diferencia entre hit  |
-|                                           |                    |                y read en EXPLAIN (BUFFERS).                |
-+-------------------------------------------+--------------------+------------------------------------------------------------+
-|        "Reduciendo el resultado a         |         Si         | Coincide con actual ... rows=10001 del nodo HashAggregate  |
-|       10.001 filas" (HashAggregate)       |                    |                      en el plan real.                      |
-+-------------------------------------------+--------------------+------------------------------------------------------------+
-
+| Afirmación de la IA | ¿Es correcta? | Corrección/Evidencia |
+|---|---|---|
+| "El índice contiene todas las columnas necesarias para el WHERE (estado, eliminado)" | **No** | El índice `idx_pedido_usuario_total_estado` solo tiene como columnas `usuario_id` y `total`. `estado` y `eliminado` no están en el índice como columnas — son la condición del índice **parcial** (`WHERE eliminado = FALSE AND estado IN (...)`). La IA confunde "predicado de un índice parcial" con "columna cubierta". Por eso, además, el plan no muestra ningún `Index Cond` sobre esas columnas: el filtro ya está resuelto en la definición del índice, no en el acceso. |
+| "Al estar los datos limpios en el mapa de visibilidad, evita lecturas costosas" | No verificable con el texto dado | Es una explicación técnicamente razonable de por qué puede darse `Heap Fetches: 0` (requiere que las páginas estén marcadas como *all-visible*), pero no surge del plan que se le pasó — el texto no menciona el mapa de visibilidad en ningún lado. La IA agregó conocimiento externo presentándolo como si viniera del plan. |
+| "Logró Heap Fetches: 0, lo que significa que no necesitó ir a buscar datos a la tabla principal" | **Sí** | Coincide con el plan real: `Heap Fetches: 0` bajo el `Index Only Scan`. Interpretación correcta (a diferencia del error típico de leerlo como "no leyó nada"). |
+| "Escaneo secuencial completo... para obtener todos sus bloques de disco" | **Imprecisa** | El plan muestra `Buffers: shared hit=375` para `usuario`, es decir, 375 bloques desde la caché de `shared_buffers`, no desde disco (no hay `read=`). Decir "bloques de disco" es engañoso — precisamente esa es la diferencia entre `hit` y `read` en `EXPLAIN (BUFFERS)`. |
+| "Reduciendo el resultado a 10.001 filas" (HashAggregate) | **Sí** | Coincide con `actual ... rows=10001` del nodo `HashAggregate` en el plan real. |
 
 ## 5. Justificación técnica para la defensa oral
 
@@ -148,7 +129,7 @@ para no contaminar su respuesta con una interpretación previa.
 
 ## 6. Entregable
 
-- Plan real (antes/después de Parte 2, tomado de `ParteAndres.md`, Consulta 3).
+- Plan real (después de Parte 2, tomado de `ParteAndres.md`, Consulta 3, versión final).
 - Prompt usado y respuesta íntegra de la IA (sección 3).
 - Tabla de contraste completa (sección 4), con al menos una imprecisión conceptual
   real detectada y corregida con evidencia del propio plan.
